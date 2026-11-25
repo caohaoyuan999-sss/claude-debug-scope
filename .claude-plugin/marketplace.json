@@ -1,0 +1,14 @@
+{
+  "name": "debug-scope-marketplace",
+  "description": "Debug Scope — 按最小读取范围排查代码问题",
+  "owner": {
+    "name": "caohaoyuan999-sss"
+  },
+  "plugins": [
+    {
+      "name": "debug-scope",
+      "source": "./plugins/debug-scope",
+      "description": "读一次全项目生成地图，之后只读改动文件；同一问题 3 次未解决才建议全量。附软提醒 hook。"
+    }
+  ]
+}
