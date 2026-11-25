@@ -35,6 +35,8 @@ CODE_EXTS = {
 MAX_FILE_BYTES = 400_000
 MAX_SYMBOLS = 40
 MAX_INDENT = 4
+BRIEF_FILE_THRESHOLD = 200
+BRIEF_SIZE_THRESHOLD = 8 * 1024 * 1024
 
 SYMBOL_PATTERNS = {
     "py": [
@@ -143,16 +145,17 @@ def file_sha(path: Path):
     return h.hexdigest()
 
 
-def symbols_for(path: Path):
+def analyze(path: Path):
+    """返回 (符号列表[(行号, 种类, 名称)], 总行数, 是否截断)。"""
     group = GROUP_BY_EXT.get(path.suffix.lower())
-    if not group:
-        return [], 0
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return [], 0
+        return [], 0, False
     lines = text.splitlines()
-    found, seen = [], set()
+    if not group:
+        return [], len(lines), False
+    found, seen, truncated = [], set(), False
     for lineno, line in enumerate(lines, 1):
         for kind, rx in SYMBOL_PATTERNS[group]:
             m = rx.match(line)
@@ -164,30 +167,34 @@ def symbols_for(path: Path):
             if name in seen:
                 break
             seen.add(name)
-            found.append(f"- `L{lineno}` {kind} `{name}`")
+            found.append((lineno, kind, name))
             break
         if len(found) >= MAX_SYMBOLS:
-            found.append("- …（符号过多，已截断）")
+            truncated = True
             break
-    return found, len(lines)
+    return found, len(lines), truncated
 
 
 def parse_map(text: str):
-    shas, bodies = {}, {}
-    cur, sha, buf = None, None, []
+    shas, bodies, levels = {}, {}, {}
+    cur, sha, level, buf = None, None, "full", []
     for line in text.splitlines(keepends=True):
-        m = re.match(r"<!-- file: (.+?) \| sha: ([0-9a-f]{8,})", line)
+        m = re.match(r"<!-- file: (.+?) \| sha: ([0-9a-f]{8,})(?: \| lines: \d+)?( \| brief)?", line)
         if m:
             if cur:
                 shas[cur] = sha
                 bodies[cur] = "".join(buf)
-            cur, sha, buf = m.group(1), m.group(2), [line]
+                levels[cur] = level
+            cur, sha = m.group(1), m.group(2)
+            level = "brief" if m.group(3) else "full"
+            buf = [line]
         elif cur is not None:
             buf.append(line)
     if cur:
         shas[cur] = sha
         bodies[cur] = "".join(buf)
-    return shas, bodies
+        levels[cur] = level
+    return shas, bodies, levels
 
 
 def current_shas(root: Path) -> dict:
@@ -211,37 +218,105 @@ def cmd_init(root: Path) -> None:
         print(f"  {f.as_posix()}")
 
 
-def cmd_scan(root: Path) -> None:
+def cmd_scan(root: Path, args) -> None:
+    files = list(iter_code_files(root))
+    total_bytes = 0
+    for _, p in files:
+        try:
+            total_bytes += p.stat().st_size
+        except OSError:
+            pass
+    tiered = not args.full and (
+        args.brief
+        or len(files) > BRIEF_FILE_THRESHOLD
+        or total_bytes > BRIEF_SIZE_THRESHOLD
+    )
+
+    st = load_state(root)
+    hot = set(st.get("scope_files") or []) | set(st.get("focus_files") or [])
+
     mp = root / MAP_FILE
-    old_shas, old_bodies = ({}, {})
+    old_shas, old_bodies, old_levels = {}, {}, {}
     if mp.exists():
-        old_shas, old_bodies = parse_map(mp.read_text(encoding="utf-8"))
+        old_shas, old_bodies, old_levels = parse_map(mp.read_text(encoding="utf-8"))
+
     parts, reused, updated = [], 0, 0
-    for rel, path in iter_code_files(root):
+    for rel, path in files:
         sha = file_sha(path)
         if sha is None:
             continue
-        if old_shas.get(rel) == sha and rel in old_bodies:
+        level = "brief" if (tiered and rel not in hot) else "full"
+        if old_shas.get(rel) == sha and old_levels.get(rel) == level and rel in old_bodies:
             parts.append(old_bodies[rel])
             reused += 1
             continue
-        syms, nlines = symbols_for(path)
-        block = [f"<!-- file: {rel} | sha: {sha} | lines: {nlines} -->\n",
-                 f"### {rel}\n"]
-        if syms:
-            block.extend(s + "\n" for s in syms)
+        syms, nlines, truncated = analyze(path)
+        if level == "brief":
+            if truncated:
+                count = f"{MAX_SYMBOLS}+ 个符号"
+            elif syms:
+                count = f"{len(syms)} 个符号"
+            else:
+                count = "未识别到符号"
+            block = (
+                f"<!-- file: {rel} | sha: {sha} | lines: {nlines} | brief -->\n"
+                f"### {rel}\n"
+                f"- {nlines} 行 · {count}（简要摘要，需要时 focus 后再 scan）\n\n"
+            )
         else:
-            block.append("- （无可识别符号）\n")
-        parts.append("".join(block) + "\n")
+            head = f"<!-- file: {rel} | sha: {sha} | lines: {nlines} -->\n### {rel}\n"
+            if syms:
+                body = "".join(f"- `L{ln}` {kind} `{name}`\n" for ln, kind, name in syms)
+                if truncated:
+                    body += "- …（符号过多，已截断）\n"
+            else:
+                body = "- （无可识别符号）\n"
+            block = head + body + "\n"
+        parts.append(block)
         updated += 1
+
+    mode = "分级（改动/关注文件完整，其余简要）" if tiered else "完整"
     header = (
         "# 项目地图\n\n"
         "> debug-scope 生成，勿手改。sha 与磁盘不一致说明该块已过期。\n"
-        f"> 更新：{now_str()}　文件数：{len(parts)}\n\n"
+        f"> 模式：{mode}　更新：{now_str()}　文件数：{len(parts)}\n\n"
     )
     mp.parent.mkdir(parents=True, exist_ok=True)
     mp.write_text(header + "".join(parts), encoding="utf-8")
-    print(f"地图已更新：{len(parts)} 个文件（复用 {reused}，重写 {updated}）→ {MAP_FILE.as_posix()}")
+    print(f"地图已更新：{len(parts)} 个文件（复用 {reused}，重写 {updated}，模式：{mode}）")
+    if tiered:
+        print("提示：项目较大，只有改动文件 + focus 文件是完整版；"
+              "用到新文件时运行 focus add <路径> 再 scan")
+
+
+def cmd_focus(root: Path, args) -> None:
+    st = load_state(root)
+    focus = list(st.get("focus_files") or [])
+    if args.action == "add":
+        for p in args.paths:
+            cand = Path(p)
+            if not cand.is_absolute():
+                cand = root / cand
+            try:
+                rel = cand.resolve().relative_to(root).as_posix()
+            except ValueError:
+                print(f"跳过（不在项目内）：{p}")
+                continue
+            if rel not in focus:
+                focus.append(rel)
+                print(f"+ {rel}")
+        st["focus_files"] = focus
+        save_state(root, st)
+        print(f"focus 共 {len(focus)} 个文件；需要完整摘要请运行 scan")
+    elif args.action == "clear":
+        st["focus_files"] = []
+        save_state(root, st)
+        print("focus 已清空")
+    else:
+        if not focus:
+            print("focus 为空")
+        for f in focus:
+            print(f"- {f}")
 
 
 def cmd_snapshot(root: Path) -> None:
@@ -291,6 +366,7 @@ def close_issue(root: Path, st: dict, final_state: str, detail: str = "") -> Non
     st.setdefault("history", []).append(iss)
     st["issue"] = None
     st["escalate"] = False
+    st["focus_files"] = []
     append_journal(root, iss.get("id"), final_state, detail)
     save_state(root, st)
 
@@ -431,9 +507,14 @@ def main(argv=None) -> int:
     ap.add_argument("--root", default=".", help="项目根目录，默认当前目录")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init")
-    sub.add_parser("scan")
+    p_scan = sub.add_parser("scan")
+    p_scan.add_argument("--full", action="store_true", help="强制全部完整")
+    p_scan.add_argument("--brief", action="store_true", help="强制分级摘要")
     sub.add_parser("snapshot")
     sub.add_parser("changed")
+    p_focus = sub.add_parser("focus")
+    p_focus.add_argument("action", choices=["add", "clear", "list"])
+    p_focus.add_argument("paths", nargs="*", default=[])
     p_issue = sub.add_parser("issue")
     p_issue.add_argument("action", choices=["new", "tried", "fixed", "confirm",
                                             "close", "park", "answer", "pending", "status"])
@@ -451,11 +532,13 @@ def main(argv=None) -> int:
     if args.cmd == "init":
         cmd_init(root)
     elif args.cmd == "scan":
-        cmd_scan(root)
+        cmd_scan(root, args)
     elif args.cmd == "snapshot":
         cmd_snapshot(root)
     elif args.cmd == "changed":
         cmd_changed(root)
+    elif args.cmd == "focus":
+        cmd_focus(root, args)
     elif args.cmd == "issue":
         cmd_issue(root, args)
     elif args.cmd == "escalate":

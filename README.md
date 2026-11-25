@@ -47,9 +47,11 @@
 
 ```bash
 python .claude/debug-scope/scope.py init      # 初始化
-python .claude/debug-scope/scope.py scan      # 生成/增量更新地图
+python .claude/debug-scope/scope.py scan      # 生成/增量更新地图（--full / --brief 强制模式）
 python .claude/debug-scope/scope.py snapshot  # 记录 baseline（=「保存并运行过一次」）
 python .claude/debug-scope/scope.py changed   # 列出相对 baseline 的改动
+python .claude/debug-scope/scope.py focus add <路径>   # 关注文件：分级模式下升级为完整版
+python .claude/debug-scope/scope.py focus list|clear
 
 python .claude/debug-scope/scope.py issue new "登录页 500"
 python .claude/debug-scope/scope.py issue tried "怀疑 token 过期没刷新"
@@ -72,6 +74,15 @@ python .claude/debug-scope/scope.py escalate on|off           # 允许/禁止全
 | L0 | 改动文件 + 报错指到的文件 | 默认 |
 | L1 | L0 的直接调用方/被调用方（grep） | L0 解释不通 |
 | L2 | 全量 | 地图缺失，或 3 次未解决且用户同意 |
+
+## 大项目：分级地图
+
+项目超过 200 个文件或 8MB 时，`scan` 自动切换：
+
+- **改动文件 + focus 文件** → 完整版（符号 + 行号）
+- **其余文件** → 一行摘要（行数 + 符号数）
+
+用到某个文件时 `focus add <路径>` 再 `scan` 即可升级；问题关闭时 focus 自动清空，地图不会无限膨胀。
 
 ## 怎样才算"解决"
 

@@ -33,7 +33,7 @@ description: 调试、排查 bug 时按"地图 + 增量 + 阶梯"工作，避免
 2. `python .claude/debug-scope/scope.py issue new "<一句话描述>"`（上一个 issue 未关闭时会被放进 `pending-answer`，并打印提醒）
 3. 读：改动文件 + 报错里点名的文件（L0）
 4. 不够 → L1：grep 找调用方 / import / 配置，只读命中的函数
-5. 读了新文件就 `scan` 一次（只重写 sha 变了的块，不会整篇重写）
+5. 读了新文件 → `focus add <路径>`，再 `scan`（分级模式下它才会升级成完整版）
 
 ## 读取阶梯
 
@@ -42,6 +42,22 @@ description: 调试、排查 bug 时按"地图 + 增量 + 阶梯"工作，避免
 - **L2**：全量。**只在**地图缺失、或同一问题 3 次未解决、**且用户明确同意**后使用
 
 每次回答的第一行说明范围，例如：`范围：L0（2 个文件）`。
+
+## 大项目：分级地图
+
+`scan` 在文件数 > 200 或总大小 > 8MB 时自动进入分级模式：
+
+- **改动文件 + focus 文件** → 完整版（符号 + 行号）
+- **其余文件** → 一行摘要（行数 + 符号数）
+
+处理新问题时，先把报错相关的文件加进 focus：
+
+```bash
+python .claude/debug-scope/scope.py focus add src/parser.py src/config.py
+python .claude/debug-scope/scope.py scan
+```
+
+问题结束时 focus 自动清空（fixed / close 时）。小项目不用管这一节，默认全是完整版。
 
 ## 假设与计数
 
@@ -93,7 +109,7 @@ baseline 只在"用户确认跑通"时前进。这样没解决的问题留下的
 ## 记录纪律
 
 - `debug-journal.md` 只追加，不改旧行
-- `code-map.md` 只替换 sha 变化的文件块，不整篇重写
+- `code-map.md` 是缓存，可以按需重写/升级级别；它只存结构和行号，不存方案
 - 地图里存"结构 + 符号 + 行号"，**不存源码原文**：原文会过期，也会吃掉上下文
 
 ## 向用户要的三件套
