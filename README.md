@@ -53,10 +53,13 @@ python .claude/debug-scope/scope.py changed   # 列出相对 baseline 的改动
 
 python .claude/debug-scope/scope.py issue new "登录页 500"
 python .claude/debug-scope/scope.py issue tried "怀疑 token 过期没刷新"
-python .claude/debug-scope/scope.py issue fixed --confirmed   # 用户说「好了」
+python .claude/debug-scope/scope.py issue fixed --confirmed   # 用户说「好了」← 只有这里刷新 baseline
 python .claude/debug-scope/scope.py issue fixed               # 待确认（有报错消失/测试转绿为证）
 python .claude/debug-scope/scope.py issue confirm
-python .claude/debug-scope/scope.py issue close               # 没确认就换问题
+python .claude/debug-scope/scope.py issue park                # 用户说「先放着」
+python .claude/debug-scope/scope.py issue pending             # 看有哪些还没确认
+python .claude/debug-scope/scope.py issue answer <id> --state fixed|parked
+python .claude/debug-scope/scope.py issue close               # 放弃跟踪（不算解决）
 python .claude/debug-scope/scope.py issue status
 
 python .claude/debug-scope/scope.py escalate on|off           # 允许/禁止全量读取
@@ -74,12 +77,14 @@ python .claude/debug-scope/scope.py escalate on|off           # 允许/禁止全
 
 | 信号 | 结果 |
 |---|---|
-| 用户说"解决了 / 好了" | `fixed` |
+| 用户说"解决了 / 好了" | `fixed`，刷新 baseline |
 | 报错消失 / 测试转绿（有输出为证） | `pending-confirm`，等用户确认 |
-| 用户不提这个、直接问新问题 | `closed-unconfirmed`（不算解决，但关闭计数） |
+| 用户不提这个、直接问新问题 | 回答新问题 + 问一句旧问题；旧问题进 `pending-answer` |
 | Claude 说"应该好了" | 不算 |
 
 `fixed` 和 `closed-unconfirmed` 分开记，比例是以后调参的唯一依据。
+
+**记录时机**：假设只记 `issue tried`，没验证不写"已修复"；baseline 只在用户确认跑通后前进，这样没解决的问题留下的改动不会被藏起来。
 
 ## Hook 行为
 

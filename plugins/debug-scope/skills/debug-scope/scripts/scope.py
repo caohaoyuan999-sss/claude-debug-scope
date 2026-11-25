@@ -96,7 +96,8 @@ def load_state(root: Path) -> dict:
         except Exception:
             pass
     return {"version": 1, "mode": "warn", "escalate": False,
-            "baseline": {}, "scope_files": [], "issue": None, "history": []}
+            "baseline": {}, "scope_files": [], "issue": None,
+            "pending": [], "history": []}
 
 
 def save_state(root: Path, state: dict) -> None:
@@ -302,7 +303,16 @@ def cmd_issue(root: Path, args) -> None:
     if action == "new":
         cur = active_issue(st)
         if cur:
-            close_issue(root, st, "superseded", f"被新问题取代：{text}")
+            cur["state"] = "pending-answer"
+            cur["parked_at"] = now_str()
+            st.setdefault("pending", []).append(cur)
+            st["issue"] = None
+            append_journal(root, cur.get("id"), "pending-answer",
+                           f"用户问了新问题，未确认旧问题：{text}")
+            print(f"⚠ 上一个问题未确认：{cur['id']} {cur.get('desc', '')}")
+            print("   回答新问题的同时顺手问一句它是否解决；得到答复后：")
+            print(f"   解决   → issue answer {cur['id']} --state fixed")
+            print(f"   先放着 → issue answer {cur['id']} --state parked")
         iid = datetime.now().strftime("%Y%m%d-%H%M%S")
         st["issue"] = {"id": iid, "desc": text, "state": "open", "tries": 0,
                        "hypotheses": [], "opened": now_str()}
@@ -322,7 +332,33 @@ def cmd_issue(root: Path, args) -> None:
                 print(f"  {i}. {h}")
         print(f"escalate : {st.get('escalate')}")
         print(f"改动范围 : {len(st.get('scope_files') or [])} 个文件")
+        print(f"待确认   : {len(st.get('pending') or [])} 条")
         print(f"历史     : {len(st.get('history') or [])} 条")
+        return
+
+    if action == "pending":
+        pend = st.get("pending") or []
+        if not pend:
+            print("没有待确认的问题")
+        for p in pend:
+            print(f"- {p['id']} | {p.get('desc', '')} | 已试 {p.get('tries', 0)} 次")
+        return
+
+    if action == "answer":
+        pend = st.get("pending") or []
+        found = next((p for p in pend if p.get("id") == text), None)
+        if not found:
+            sys.exit(f"待确认列表里没有 {text!r}，先运行：issue pending")
+        state = args.state or "parked"
+        pend.remove(found)
+        found["state"] = state
+        found["closed"] = now_str()
+        st.setdefault("history", []).append(found)
+        append_journal(root, found["id"], state, "用户答复")
+        if state == "fixed" and not active_issue(st):
+            st["baseline"] = current_shas(root)
+        save_state(root, st)
+        print(f"{found['id']} 已标记 {state}")
         return
 
     iss = active_issue(st)
@@ -361,11 +397,21 @@ def cmd_issue(root: Path, args) -> None:
         print("已确认 fixed，并刷新 baseline")
         return
 
-    if action == "close":
-        close_issue(root, st, "closed-unconfirmed", text or "用户未确认，直接问了新问题")
-        st["baseline"] = current_shas(root)
+    if action == "park":
+        iss["state"] = "pending-answer"
+        iss["parked_at"] = now_str()
+        st.setdefault("pending", []).append(iss)
+        st["issue"] = None
+        st["escalate"] = False
+        append_journal(root, iss["id"], "pending-answer", text or "用户说先放着")
         save_state(root, st)
-        print("已关闭（未确认），并刷新 baseline")
+        print(f"已搁置 {iss['id']}（不算解决，稍后可 issue answer {iss['id']} --state fixed）")
+        return
+
+    if action == "close":
+        close_issue(root, st, "closed-unconfirmed", text or "用户放弃跟踪")
+        save_state(root, st)
+        print("已标记 closed-unconfirmed（不算解决，baseline 不变）")
         return
 
     sys.exit(f"未知动作：{action}")
@@ -389,8 +435,10 @@ def main(argv=None) -> int:
     sub.add_parser("snapshot")
     sub.add_parser("changed")
     p_issue = sub.add_parser("issue")
-    p_issue.add_argument("action", choices=["new", "tried", "fixed", "confirm", "close", "status"])
+    p_issue.add_argument("action", choices=["new", "tried", "fixed", "confirm",
+                                            "close", "park", "answer", "pending", "status"])
     p_issue.add_argument("text", nargs="?", default="")
+    p_issue.add_argument("--state", choices=["fixed", "parked"], default="")
     p_issue.add_argument("--confirmed", action="store_true", help="用户已确认解决")
     p_esc = sub.add_parser("escalate")
     p_esc.add_argument("value", choices=["on", "off"])

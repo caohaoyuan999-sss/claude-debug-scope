@@ -1,6 +1,6 @@
 {
   "name": "debug-scope",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "按最小读取范围排查代码问题：项目地图 + 改动基线 + 阶梯扩展 + 问题计数。",
   "author": {
     "name": "caohaoyuan999-sss"

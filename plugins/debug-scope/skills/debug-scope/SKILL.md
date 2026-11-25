@@ -30,7 +30,7 @@ description: 调试、排查 bug 时按"地图 + 增量 + 阶梯"工作，避免
 ## 每次收到问题
 
 1. `python .claude/debug-scope/scope.py changed` —— 拿到相对 baseline 的改动集
-2. `python .claude/debug-scope/scope.py issue new "<一句话描述>"`（上一个 issue 未关闭时会被自动标为 superseded）
+2. `python .claude/debug-scope/scope.py issue new "<一句话描述>"`（上一个 issue 未关闭时会被放进 `pending-answer`，并打印提醒）
 3. 读：改动文件 + 报错里点名的文件（L0）
 4. 不够 → L1：grep 找调用方 / import / 配置，只读命中的函数
 5. 读了新文件就 `scan` 一次（只重写 sha 变了的块，不会整篇重写）
@@ -60,10 +60,35 @@ python .claude/debug-scope/scope.py issue tried "怀疑 X 导致 Y"
 |---|---|---|
 | 用户说"解决了 / 好了" | `issue fixed --confirmed` | ✅ |
 | 报错消失 / 测试转绿（有实际输出为证） | `issue fixed` → 进入 pending-confirm | ⏳ 待用户确认 |
-| 用户不提这个问题、直接问新问题 | `issue close`（未确认关闭） | ❌ 不算，但关闭并清零 |
+| 用户不提这个问题、直接问新问题 | 回答新问题 + 顺手问一句旧问题；旧问题进 `pending-answer` | ⏳ 待确认 |
 | 我口头说"应该好了" | 不记录 | ❌ |
 
 **禁止**在没有客观依据时自己宣布问题解决。`fixed` 和"未确认关闭"必须分开记，这个比例是以后优化本流程的唯一依据。
+
+## 记录时机（容易搞错）
+
+**没验证的东西不写进记录**，否则没解决时还得回头改写：
+
+| 什么时候 | 可以写什么 |
+|---|---|
+| 提出假设 | `issue tried "..."` —— 只追加，写成假设而不是结论 |
+| 读过的代码 | `scan` —— 只更新结构块（sha / 行号 / 符号），不含方案 |
+| **用户改完并跑通** | `scan` + `issue fixed --confirmed`，此时才刷新 baseline |
+| 任何未验证的时刻 | ❌ 不写"已修复"，不刷新 baseline，不把方案写成结论 |
+
+baseline 只在"用户确认跑通"时前进。这样没解决的问题留下的改动不会被藏起来，也不会出现"先写下、没解决、再改"的重复改写。
+
+## 旧问题没答复，用户又问了新问题
+
+不要静默关闭，也不要自己判定成功：
+
+1. 正常回答新问题
+2. 末尾加一句："另外，上一个问题（xxx）解决了吗？"
+3. 脚本已把旧问题放进 `pending-answer`：
+   - 用户说解决了 → `issue answer <id> --state fixed`
+   - 用户说先放着 → `issue answer <id> --state parked`
+   - 用户没答 → 留在 pending，**不要每次重复追问**
+4. 用户答完旧问题再回答当前问题，两边都不丢
 
 ## 记录纪律
 
