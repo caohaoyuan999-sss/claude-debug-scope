@@ -52,6 +52,7 @@ python .claude/debug-scope/scope.py snapshot  # 记录 baseline（=「保存并�
 python .claude/debug-scope/scope.py changed   # 列出相对 baseline 的改动
 python .claude/debug-scope/scope.py focus add <路径>   # 关注文件：分级模式下升级为完整版
 python .claude/debug-scope/scope.py focus list|clear
+python .claude/debug-scope/scope.py --version # 看脚本版本，和插件里的对比
 
 python .claude/debug-scope/scope.py issue new "登录页 500"
 python .claude/debug-scope/scope.py issue tried "怀疑 token 过期没刷新"
@@ -116,6 +117,11 @@ skill 是按描述匹配触发的，不是常驻。想更稳，在项目的 `CLA
 - 同一问题 3 次未解决，先问我要不要全量
 - 我说"解决了/好了"才记 fixed
 ```
+
+## 配置文件与版本
+
+- yaml / json / toml / ini / env / Dockerfile / Makefile / xml 也会进地图，但只记**行数和顶层 key**；`package-lock.json`、`yarn.lock` 这类锁文件跳过
+- 项目里的 `scope.py` 是副本，插件升级后不会自动同步：用 `scope.py --version` 对比插件里的 `scripts/scope.py`，不一致就重新复制
 
 ## 已知限制
 

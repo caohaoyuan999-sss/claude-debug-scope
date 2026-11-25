@@ -59,6 +59,18 @@ python .claude/debug-scope/scope.py scan
 
 问题结束时 focus 自动清空（fixed / close 时）。小项目不用管这一节，默认全是完整版。
 
+## 配置文件与脚本版本
+
+- 配置类文件（yaml / json / toml / ini / env / Dockerfile / Makefile / xml）也进地图，但只记**行数和顶层 key / 章节**，不解析内容；`package-lock.json`、`yarn.lock` 这类锁文件直接跳过
+- 项目里的 `scope.py` 是副本，插件更新后不会自动同步。开始排查前比一次版本：
+
+```bash
+python <本 skill 目录>/scripts/scope.py --version
+python .claude/debug-scope/scope.py --version
+```
+
+不一致就重新复制 `scripts/scope.py` 覆盖项目里的，再 `scan`。
+
 ## 假设与计数
 
 每提出一个可证伪的假设（"我怀疑是 X 导致的"）就记一次：

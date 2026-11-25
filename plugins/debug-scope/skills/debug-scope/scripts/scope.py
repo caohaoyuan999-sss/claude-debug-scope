@@ -37,6 +37,14 @@ MAX_SYMBOLS = 40
 MAX_INDENT = 4
 BRIEF_FILE_THRESHOLD = 200
 BRIEF_SIZE_THRESHOLD = 8 * 1024 * 1024
+VERSION = "0.4.0"
+
+CONFIG_EXTS = {".yaml", ".yml", ".json", ".toml", ".ini", ".cfg", ".conf",
+               ".properties", ".xml"}
+CONFIG_FILENAMES = {"dockerfile", "makefile", "procfile"}
+SKIP_FILENAMES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+                  "composer.lock", "poetry.lock", "cargo.lock", "go.sum",
+                  "gemfile.lock"}
 
 SYMBOL_PATTERNS = {
     "py": [
@@ -117,14 +125,23 @@ def append_journal(root: Path, issue_id, event: str, detail: str = "") -> None:
         f.write(f"- {now_str()} | {issue_id or '-'} | {event} | {detail.strip()}\n")
 
 
+def is_config(path: Path) -> bool:
+    n = path.name.lower()
+    return (path.suffix.lower() in CONFIG_EXTS
+            or n in CONFIG_FILENAMES
+            or n.startswith(".env"))
+
+
 def iter_code_files(root: Path):
     root = root.resolve()
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames
                              if not d.startswith(".") and d not in SKIP_DIRS)
         for fn in sorted(filenames):
+            if fn.lower() in SKIP_FILENAMES:
+                continue
             p = Path(dirpath) / fn
-            if p.suffix.lower() not in CODE_EXTS:
+            if p.suffix.lower() not in CODE_EXTS and not is_config(p):
                 continue
             try:
                 if p.stat().st_size > MAX_FILE_BYTES:
@@ -146,7 +163,9 @@ def file_sha(path: Path):
 
 
 def analyze(path: Path):
-    """返回 (符号列表[(行号, 种类, 名称)], 总行数, 是否截断)。"""
+    """返回 (符号列表[(行号, 种类, 名称)], 总行数, 是否截断)。行号 0 表示无精确行号。"""
+    if is_config(path):
+        return analyze_config(path)
     group = GROUP_BY_EXT.get(path.suffix.lower())
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -173,6 +192,87 @@ def analyze(path: Path):
             truncated = True
             break
     return found, len(lines), truncated
+
+
+def analyze_config(path: Path):
+    """配置类文件只记行数和顶层 key / 章节，不解析内容。"""
+    ext = path.suffix.lower()
+    name = path.name.lower()
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return [], 0, False
+    lines = text.splitlines()
+    keys = []
+
+    def add(lineno, kind, label):
+        keys.append((lineno, kind, label))
+
+    if ext == ".json":
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict):
+                for k in data.keys():
+                    add(0, "key", str(k))
+        except Exception:
+            for i, line in enumerate(lines, 1):
+                m = re.match(r'^\s*"([^"]+)"\s*:', line)
+                if m:
+                    add(i, "key", m.group(1))
+    elif ext in {".yaml", ".yml"}:
+        for i, line in enumerate(lines, 1):
+            m = re.match(r"^([A-Za-z0-9_.\-]+)\s*:", line)
+            if m:
+                add(i, "key", m.group(1))
+    elif ext == ".toml":
+        for i, line in enumerate(lines, 1):
+            m = re.match(r"^\[([^\]]+)\]", line)
+            if m:
+                add(i, "table", m.group(1))
+                continue
+            m = re.match(r"^([A-Za-z0-9_.\-]+)\s*=", line)
+            if m:
+                add(i, "key", m.group(1))
+    elif ext in {".ini", ".cfg", ".conf"}:
+        for i, line in enumerate(lines, 1):
+            m = re.match(r"^\[([^\]]+)\]", line)
+            if m:
+                add(i, "section", m.group(1))
+    elif ext == ".properties":
+        for i, line in enumerate(lines, 1):
+            m = re.match(r"^([A-Za-z0-9_.\-]+)\s*=", line)
+            if m:
+                add(i, "key", m.group(1))
+    elif name.startswith(".env"):
+        for i, line in enumerate(lines, 1):
+            m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
+            if m:
+                add(i, "var", m.group(1))
+    elif name == "dockerfile":
+        for i, line in enumerate(lines, 1):
+            m = re.match(r"^(FROM|ARG|ENV|EXPOSE)\s+(\S+)", line, re.IGNORECASE)
+            if m:
+                add(i, "directive", f"{m.group(1).upper()} {m.group(2)}")
+    elif name == "makefile":
+        for i, line in enumerate(lines, 1):
+            m = re.match(r"^([A-Za-z0-9_./-]+)\s*:(?!=)", line)
+            if m and not m.group(1).startswith("."):
+                add(i, "target", m.group(1))
+    elif ext == ".xml":
+        for i, line in enumerate(lines, 1):
+            m = re.match(r"^\s*<([A-Za-z_][\w.\-]*)", line)
+            if m and not m.group(1).startswith("?"):
+                add(i, "tag", m.group(1))
+
+    seen, out = set(), []
+    for item in keys:
+        if item[2] in seen:
+            continue
+        seen.add(item[2])
+        out.append(item)
+        if len(out) >= MAX_SYMBOLS:
+            break
+    return out, len(lines), len(keys) > MAX_SYMBOLS
 
 
 def parse_map(text: str):
@@ -233,6 +333,10 @@ def cmd_scan(root: Path, args) -> None:
     )
 
     st = load_state(root)
+    prev_ver = st.get("script_version")
+    if prev_ver and prev_ver != VERSION:
+        print(f"脚本版本 {prev_ver} → {VERSION}；若与插件里的版本不一致，请重新复制 scripts/scope.py")
+    st["script_version"] = VERSION
     hot = set(st.get("scope_files") or []) | set(st.get("focus_files") or [])
 
     mp = root / MAP_FILE
@@ -266,7 +370,10 @@ def cmd_scan(root: Path, args) -> None:
         else:
             head = f"<!-- file: {rel} | sha: {sha} | lines: {nlines} -->\n### {rel}\n"
             if syms:
-                body = "".join(f"- `L{ln}` {kind} `{name}`\n" for ln, kind, name in syms)
+                body = "".join(
+                    (f"- `L{ln}` {kind} `{name}`\n" if ln else f"- {kind} `{name}`\n")
+                    for ln, kind, name in syms
+                )
                 if truncated:
                     body += "- …（符号过多，已截断）\n"
             else:
@@ -283,6 +390,7 @@ def cmd_scan(root: Path, args) -> None:
     )
     mp.parent.mkdir(parents=True, exist_ok=True)
     mp.write_text(header + "".join(parts), encoding="utf-8")
+    save_state(root, st)
     print(f"地图已更新：{len(parts)} 个文件（复用 {reused}，重写 {updated}，模式：{mode}）")
     if tiered:
         print("提示：项目较大，只有改动文件 + focus 文件是完整版；"
@@ -505,6 +613,7 @@ def cmd_escalate(root: Path, value: str) -> None:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="scope.py", description="debug-scope 状态机")
     ap.add_argument("--root", default=".", help="项目根目录，默认当前目录")
+    ap.add_argument("--version", action="version", version=f"scope.py {VERSION}")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init")
     p_scan = sub.add_parser("scan")
